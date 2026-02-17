@@ -110,8 +110,8 @@ export const getFuelInsights = () =>
 export const askGeotabAce = async (prompt: string, existingChatId?: string) => {
   const { credentials, targetUrl } = await getAuth();
   let chatId = existingChatId;
-
-  // --- STEP 1: Ensure we have a Chat ID ---
+  const constrainedPrompt = `${prompt} (IMPORTANT: Provide a very brief, precise answer. Limit to 2-3 sentences. No long paragraphs.)`;
+  // --- STEP 1: Ensure we have a Chat ID (create-chat) ---
   if (!chatId) {
     console.log("🆕 No Chat ID found. Creating new session...");
     const createRes = await fetch(targetUrl, {
@@ -123,22 +123,20 @@ export const askGeotabAce = async (prompt: string, existingChatId?: string) => {
           serviceName: "dna-planet-orchestration",
           functionName: "create-chat",
           customerData: true,
-          functionParameters: { prompt }, // Some versions require the prompt here too
+          functionParameters: {}, // Python example uses empty dict for create-chat
           credentials,
         },
       }),
     });
 
     const createData = await createRes.json();
-    console.log("Create Data:", createData);
-    // Path: result.apiResult.results[0].chat_id based on your payload
     chatId = createData.result?.apiResult?.results?.[0]?.chat_id;
 
     if (!chatId) throw new Error("Failed to retrieve chat_id from Geotab Ace.");
     console.log(`✅ Chat Created: ${chatId}`);
   }
 
-  // --- STEP 2: Send the Prompt to the active Chat ---
+  // --- STEP 2: Send the Prompt (send-prompt) ---
   console.log("✉️ Sending prompt to Ace...");
   const promptRes = await fetch(targetUrl, {
     method: "POST",
@@ -150,8 +148,8 @@ export const askGeotabAce = async (prompt: string, existingChatId?: string) => {
         functionName: "send-prompt",
         customerData: true,
         functionParameters: {
-          prompt: prompt,
           chat_id: chatId,
+          prompt: constrainedPrompt,
         },
         credentials,
       },
@@ -159,18 +157,17 @@ export const askGeotabAce = async (prompt: string, existingChatId?: string) => {
   });
 
   const promptData = await promptRes.json();
-  console.log("Prompt Data:", promptData.result);
-  // This second call returns the message_group.id for polling
   const messageGroupId =
     promptData.result?.apiResult?.results?.[0]?.message_group?.id;
 
   if (!messageGroupId)
     throw new Error("Failed to get message_group_id after sending prompt.");
 
-  // --- STEP 3: Poll for the "DONE" status ---
+  // --- STEP 3: Poll for completion (get-message-group) ---
   let attempts = 0;
-  while (attempts < 20) {
-    await new Promise((r) => setTimeout(r, 3000));
+  while (attempts < 30) {
+    // Increased attempts for complex queries
+    await new Promise((r) => setTimeout(r, 5000)); // Python uses 5s sleep
 
     const pollRes = await fetch(targetUrl, {
       method: "POST",
@@ -181,44 +178,47 @@ export const askGeotabAce = async (prompt: string, existingChatId?: string) => {
           serviceName: "dna-planet-orchestration",
           functionName: "get-message-group",
           customerData: true,
-          functionParameters: { id: messageGroupId }, // Use functionParameters consistently
+          functionParameters: {
+            chat_id: chatId, // Added based on Python example
+            message_group_id: messageGroupId, // Fixed key name from 'id' to 'message_group_id'
+          },
           credentials,
         },
       }),
     });
 
     const pollData = await pollRes.json();
-    // Geotab Ace responses are often nested in result.apiResult.results[0]
     const group = pollData.result?.apiResult?.results?.[0]?.message_group;
+    const status = group?.status?.status;
 
-    if (
-      group?.status?.status === "DONE" ||
-      group?.status?.status === "SUCCESS"
-    ) {
-      const messages = Array.isArray(group.messages)
-        ? group.messages
-        : Object.values(group.messages || {});
+    console.log("Poll Data:", group);
+    console.log(`🤖 Ace Status: ${status || "UNKNOWN"}`);
 
-      // 1. Find the message that contains the 'reasoning' or 'preview_array'
-      // This is usually the UserDataReference or the last Assistant message
-      const dataMessage: any =
-        messages.find((m: any) => m.type === "UserDataReference") ||
-        messages[messages.length - 1];
+    if (status === "DONE") {
+      const messages = Object.values(group.messages || {});
+      const assistantMsg: any = [...messages]
+        .reverse()
+        .find((m: any) => m.role === "assistant");
+
+      // Get the raw content
+      const fullContent =
+        assistantMsg?.content || assistantMsg?.reasoning || "";
+
+      // Trim to the first newline (\n)
+      // This effectively removes the 'Confidence Level' and 'References' sections
+      const trimmedText = fullContent.split("\n")[0].trim();
 
       return {
-        // Prioritize the human-readable reasoning text
-        text:
-          dataMessage?.reasoning ||
-          dataMessage?.content?.text ||
-          "Analysis complete.",
-        // Pass the raw data back so your frontend can build a table
-        data: dataMessage?.preview_array || [],
+        text: trimmedText,
+        data: assistantMsg?.preview_array || [],
         chatId: chatId,
-        query: dataMessage?.query || null, // The SQL Ace generated
       };
     }
 
-    console.log(`🤖 Ace Status: ${group?.status?.status || "UNKNOWN"}`);
+    if (status === "FAILED") {
+      throw new Error(`Ace status failed for group ${messageGroupId}`);
+    }
+
     attempts++;
   }
 
