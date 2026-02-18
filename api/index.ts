@@ -4,7 +4,7 @@ import * as geotab from "./geotab";
 import * as gemini from "./gemini";
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: "*" }));
 app.use(express.json());
 
 // Main Endpoint for a Card (e.g., /api/insights/safety)
@@ -29,6 +29,9 @@ app.get("/api/insights/:category", async (req: Request, res: Response) => {
       case "trips":
         data = await geotab.getTripInsights();
         break;
+      case "hos":
+        data = await geotab.getHOSInsights();
+        break;
       default:
         return res
           .status(400)
@@ -36,7 +39,6 @@ app.get("/api/insights/:category", async (req: Request, res: Response) => {
     }
 
     const aiSummary = await gemini.getInsightSummary(category, data);
-
     res.json({ ...data, aiSummary });
   } catch (error: any) {
     res.status(500).json({ error: error.message });

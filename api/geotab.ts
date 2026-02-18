@@ -86,8 +86,8 @@ const fetchMetricWithDelta = async (
 
   return {
     current: todayTotal,
-    benchmark: avg30Day.toFixed(1),
-    delta: delta.toFixed(1),
+    benchmark: +avg30Day.toFixed(1),
+    delta: +delta.toFixed(1),
   };
 };
 
@@ -98,6 +98,7 @@ export const getIdlingInsights = () =>
   fetchMetricWithDelta("LogRecord", "DiagnosticEngineIdleTimeId");
 export const getFuelInsights = () =>
   fetchMetricWithDelta("StatusData", "DiagnosticFuelLevelId");
+export const getHOSInsights = () => fetchMetricWithDelta("DriverStatusChange");
 
 /**
  * Geotab Ace API Implementation.
@@ -110,10 +111,12 @@ export const getFuelInsights = () =>
 export const askGeotabAce = async (prompt: string, existingChatId?: string) => {
   const { credentials, targetUrl } = await getAuth();
   let chatId = existingChatId;
-  const constrainedPrompt = `${prompt} (IMPORTANT: Provide a very brief, precise answer. Limit to 2-3 sentences. No long paragraphs.)`;
-  // --- STEP 1: Ensure we have a Chat ID (create-chat) ---
+
+  // We remove the strict "list format only" constraint to let Ace provide the raw preview_array
+  const constrainedPrompt = `${prompt} (IMPORTANT: Provide a very brief, 1-2 sentence summary. The specific data will be shown in a table.)`;
+
+  // --- STEP 1: Ensure we have a Chat ID ---
   if (!chatId) {
-    console.log("🆕 No Chat ID found. Creating new session...");
     const createRes = await fetch(targetUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -123,21 +126,17 @@ export const askGeotabAce = async (prompt: string, existingChatId?: string) => {
           serviceName: "dna-planet-orchestration",
           functionName: "create-chat",
           customerData: true,
-          functionParameters: {}, // Python example uses empty dict for create-chat
+          functionParameters: {},
           credentials,
         },
       }),
     });
-
     const createData = await createRes.json();
     chatId = createData.result?.apiResult?.results?.[0]?.chat_id;
-
-    if (!chatId) throw new Error("Failed to retrieve chat_id from Geotab Ace.");
-    console.log(`✅ Chat Created: ${chatId}`);
+    if (!chatId) throw new Error("Failed to retrieve chat_id.");
   }
 
-  // --- STEP 2: Send the Prompt (send-prompt) ---
-  console.log("✉️ Sending prompt to Ace...");
+  // --- STEP 2: Send the Prompt ---
   const promptRes = await fetch(targetUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -147,27 +146,19 @@ export const askGeotabAce = async (prompt: string, existingChatId?: string) => {
         serviceName: "dna-planet-orchestration",
         functionName: "send-prompt",
         customerData: true,
-        functionParameters: {
-          chat_id: chatId,
-          prompt: constrainedPrompt,
-        },
+        functionParameters: { chat_id: chatId, prompt: constrainedPrompt },
         credentials,
       },
     }),
   });
-
   const promptData = await promptRes.json();
   const messageGroupId =
     promptData.result?.apiResult?.results?.[0]?.message_group?.id;
 
-  if (!messageGroupId)
-    throw new Error("Failed to get message_group_id after sending prompt.");
-
-  // --- STEP 3: Poll for completion (get-message-group) ---
+  // --- STEP 3: Poll for completion ---
   let attempts = 0;
   while (attempts < 30) {
-    // Increased attempts for complex queries
-    await new Promise((r) => setTimeout(r, 5000)); // Python uses 5s sleep
+    await new Promise((r) => setTimeout(r, 5000));
 
     const pollRes = await fetch(targetUrl, {
       method: "POST",
@@ -179,8 +170,8 @@ export const askGeotabAce = async (prompt: string, existingChatId?: string) => {
           functionName: "get-message-group",
           customerData: true,
           functionParameters: {
-            chat_id: chatId, // Added based on Python example
-            message_group_id: messageGroupId, // Fixed key name from 'id' to 'message_group_id'
+            chat_id: chatId,
+            message_group_id: messageGroupId,
           },
           credentials,
         },
@@ -191,36 +182,37 @@ export const askGeotabAce = async (prompt: string, existingChatId?: string) => {
     const group = pollData.result?.apiResult?.results?.[0]?.message_group;
     const status = group?.status?.status;
 
-    console.log("Poll Data:", group);
-    console.log(`🤖 Ace Status: ${status || "UNKNOWN"}`);
-
     if (status === "DONE") {
-      const messages = Object.values(group.messages || {});
-      const assistantMsg: any = [...messages]
-        .reverse()
-        .find((m: any) => m.role === "assistant");
+      const messages: any[] = Object.values(group.messages || {});
 
-      // Get the raw content
-      const fullContent =
-        assistantMsg?.content || assistantMsg?.reasoning || "";
+      // 1. Find the message containing the data (usually type 'UserDataReference')
+      const dataMsg = messages.find(
+        (m) => m.preview_array && m.preview_array.length > 0,
+      );
 
-      // Trim to the first newline (\n)
-      // This effectively removes the 'Confidence Level' and 'References' sections
-      const trimmedText = fullContent.split("\n")[0].trim();
+      // 2. Find the assistant's verbal response (usually type 'COTMessage')
+      const assistantMsg = messages.find(
+        (m) => m.role === "assistant" && (m.reasoning || m.content),
+      );
+
+      // Extract text summary: prioritise reasoning, then content, then interpretation
+      const rawText =
+        assistantMsg?.reasoning ||
+        assistantMsg?.content ||
+        assistantMsg?.interpretation ||
+        "";
+      const trimmedText = rawText.split("\n")[0].trim();
 
       return {
         text: trimmedText,
-        data: assistantMsg?.preview_array || [],
+        data: dataMsg?.preview_array || [],
+        columns: dataMsg?.columns || [],
         chatId: chatId,
       };
     }
 
-    if (status === "FAILED") {
-      throw new Error(`Ace status failed for group ${messageGroupId}`);
-    }
-
+    if (status === "FAILED") throw new Error("Ace status failed.");
     attempts++;
   }
-
   throw new Error("Ace Polling Timeout.");
 };

@@ -28,7 +28,7 @@ export const getInsightSummary = async (
       - 30-Day Daily Average: ${data.benchmark}
       - Percentage Change (Delta): ${data.delta}%
 
-      Task: Provide a 2-sentence briefing.
+      Task: Provide a 2-sentence briefing, use smaller sentence and make it crisp.
       Sentence 1: Evaluate if this trend is positive, negative, or neutral.
       Sentence 2: Suggest one specific management action based on Geotab best practices.
       
