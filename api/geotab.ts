@@ -97,7 +97,7 @@ export const getFaultInsights = () => fetchMetricWithDelta("FaultData");
 export const getIdlingInsights = () =>
   fetchMetricWithDelta("LogRecord", "DiagnosticEngineIdleTimeId");
 export const getFuelInsights = () =>
-  fetchMetricWithDelta("StatusData", "DiagnosticFuelLevelId");
+  fetchMetricWithDelta("StatusData", "DiagnosticTotalFuelUsedId");
 export const getHOSInsights = () => fetchMetricWithDelta("DriverStatusChange");
 
 /**
@@ -113,7 +113,7 @@ export const askGeotabAce = async (prompt: string, existingChatId?: string) => {
   let chatId = existingChatId;
 
   // We remove the strict "list format only" constraint to let Ace provide the raw preview_array
-  const constrainedPrompt = `${prompt} (IMPORTANT: Provide a very brief, 1-2 sentence summary. The specific data will be shown in a table.)`;
+  const constrainedPrompt = `${prompt} (IMPORTANT: Provide a very brief, 1-2 sentence summary. The specific data will be shown in a table.`;
 
   // --- STEP 1: Ensure we have a Chat ID ---
   if (!chatId) {
